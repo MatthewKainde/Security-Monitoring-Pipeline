@@ -1,0 +1,186 @@
+pipeline {
+    agent any
+    
+    parameters {
+        string(name: 'TARGET_URL', defaultValue: 'https://example.com', description: 'Target website URL to scan')
+    }
+    
+    environment {
+        GIT_REPO = 'Security-Monitoring-Pipeline'
+        REPORT_DIR = 'reports'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo '📥 Checking out code from Git...'
+                checkout scm
+            }
+        }
+        
+        stage('Environment Setup') {
+            steps {
+                echo '🔧 Setting up environment...'
+                sh '''
+                    mkdir -p ${REPORT_DIR}
+                    chmod +x scripts/*.sh
+                    
+                    # Install dependencies if needed
+                    pip3 install --user requests beautifulsoup4 2>/dev/null || true
+                '''
+            }
+        }
+        
+        stage('Git Secret Scan') {
+            steps {
+                echo '🔐 Scanning for secrets in Git history...'
+                script {
+                    sh '''
+                        if [ -f scripts/git_secret_scan.sh ]; then
+                            ./scripts/git_secret_scan.sh .
+                        else
+                            echo "Git secret scanner not found, skipping..."
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Dependency Security Scan') {
+            steps {
+                echo '📦 Scanning dependencies for vulnerabilities...'
+                script {
+                    sh '''
+                        if [ -f scripts/dependency_scan.sh ]; then
+                            ./scripts/dependency_scan.sh ./app
+                        else
+                            echo "Dependency scanner not found, skipping..."
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Web Security Scan') {
+            when {
+                expression { params.TARGET_URL != '' }
+            }
+            steps {
+                echo "🌐 Running web security scan on: ${params.TARGET_URL}"
+                sh '''
+                    ./scripts/web_security_scan.sh ${TARGET_URL}
+                '''
+            }
+        }
+        
+        stage('Publish Reports') {
+            steps {
+                echo '📊 Publishing HTML reports...'
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'reports',
+                    reportFiles: 'security_report_*.html',
+                    reportName: 'Security Scan Report',
+                    reportTitles: 'Security Report'
+                ])
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                echo '🚦 Checking security thresholds...'
+                script {
+                    def criticalCount = 0
+                    
+                    // Count critical findings in reports
+                    try {
+                        criticalCount = sh(
+                            script: 'grep -i "critical\\|vulnerable" reports/*.txt 2>/dev/null | wc -l',
+                            returnStdout: true
+                        ).trim().toInteger()
+                    } catch (Exception e) {
+                        echo "No text reports found or error counting: ${e.message}"
+                        criticalCount = 0
+                    }
+                    
+                    echo "Critical findings detected: ${criticalCount}"
+                    
+                    if (criticalCount > 5) {
+                        echo "⚠️ WARNING: ${criticalCount} critical findings detected!"
+                        currentBuild.result = 'UNSTABLE'
+                    } else {
+                        echo "✅ No critical vulnerabilities found!"
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo '🧹 Pipeline execution completed'
+            // Archive reports
+            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+        }
+        success {
+            echo '✅ Security scan pipeline completed successfully!'
+            script {
+                try {
+                    emailext(
+                        subject: "✅ Security Scan Passed - Build #${BUILD_NUMBER}",
+                        body: """
+                        Security scan completed successfully!
+                        
+                        Project: ${GIT_REPO}
+                        Build Number: ${BUILD_NUMBER}
+                        Target URL: ${params.TARGET_URL}
+                        Status: SUCCESS
+                        
+                        View Reports: ${BUILD_URL}Security_Scan_Report/
+                        
+                        Timestamp: ${new Date()}
+                        """,
+                        to: 'security-team@example.com',
+                        mimeType: 'text/plain'
+                    )
+                } catch (Exception e) {
+                    echo "Email notification failed: ${e.message}"
+                }
+            }
+        }
+        failure {
+            echo '❌ Security scan pipeline failed!'
+        }
+        unstable {
+            echo '⚠️ Security scan found critical issues!'
+            script {
+                try {
+                    emailext(
+                        subject: "⚠️ Security Alert - Critical Findings - Build #${BUILD_NUMBER}",
+                        body: """
+                        ⚠️ SECURITY ALERT ⚠️
+                        
+                        Security scan detected critical vulnerabilities!
+                        
+                        Project: ${GIT_REPO}
+                        Build Number: ${BUILD_NUMBER}
+                        Target URL: ${params.TARGET_URL}
+                        Status: UNSTABLE
+                        
+                        Immediate action required!
+                        View Reports: ${BUILD_URL}Security_Scan_Report/
+                        
+                        Timestamp: ${new Date()}
+                        """,
+                        to: 'security-team@example.com',
+                        mimeType: 'text/plain'
+                    )
+                } catch (Exception e) {
+                    echo "Email notification failed: ${e.message}"
+                }
+            }
+        }
+    }
+}
