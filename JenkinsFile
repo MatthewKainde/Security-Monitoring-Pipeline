@@ -8,6 +8,7 @@ pipeline {
     environment {
         GIT_REPO = 'Security-Monitoring-Pipeline'
         REPORT_DIR = 'reports'
+        FONTE_TOKEN = credentials('fonte-token-id') // <-- gunakan ID credential yang Anda buat di Jenkins
     }
     
     stages {
@@ -69,6 +70,21 @@ pipeline {
                 echo "🌐 Running web security scan on: ${params.TARGET_URL}"
                 sh '''
                     ./scripts/web_security_scan.sh ${TARGET_URL}
+                '''
+            }
+        }
+        
+        stage('Fonte Scan') {
+            steps {
+                echo '🔎 Running Fonte scan using secure credential'
+                sh '''
+                    # scripts/fonte_scan.sh should read token from env FONTE_TOKEN
+                    if [ -f scripts/fonte_scan.sh ]; then
+                        chmod +x scripts/fonte_scan.sh
+                        ./scripts/fonte_scan.sh "${FONTE_TOKEN}" ${TARGET_URL} ${REPORT_DIR}
+                    else
+                        echo "Fonte scan script not found, skipping..."
+                    fi
                 '''
             }
         }
